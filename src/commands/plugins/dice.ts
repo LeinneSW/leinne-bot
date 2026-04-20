@@ -13,20 +13,16 @@ export default class DiceCommand extends BaseCommand{
     async execute(ctx: Context, _request: CommandExecutionRequest){
         const chatOptions = {reply_parameters: {message_id: ctx.msg!.message_id}};
 
-        const pendingMessage = await ctx.reply("또동... 또동... 운명의 주사위를 굴리는 중입니다.", chatOptions);
-        await this.delay(3000);
+        const pendingMessage = await ctx.reply("또동... 또동... 주사위를 굴리는 중입니다!", chatOptions);
+        await this.delay(2000);
 
-        const value = this.roll();
+        const value = Math.floor(Math.random() * 100) + 1;
         await ctx.api.editMessageText(
             pendingMessage.chat.id,
             pendingMessage.message_id,
             this.formatReaction(value),
             {parse_mode: "HTML"},
         );
-    }
-
-    private roll(): number{
-        return Math.floor(Math.random() * 100) + 1;
     }
 
     private getReaction(value: number): string{
