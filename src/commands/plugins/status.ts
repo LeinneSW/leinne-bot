@@ -18,11 +18,10 @@ export default class StatusCommand extends BaseCommand{
 
         await ctx.reply(
             [
-                "봇 상태",
-                `가동 시간: ${this.formatDuration(uptimeSeconds)}`,
-                `시작 시각: ${this.formatTimestamp(startedAt)}`,
-                `메모리: rss ${this.formatMegabytes(memoryUsage.rss)}, heap ${this.formatMegabytes(memoryUsage.heapUsed)} / ${this.formatMegabytes(memoryUsage.heapTotal)}`,
-                `명령어 수: ${commandCount}개`,
+                `봇 시작 시각: ${this.formatTimestamp(startedAt)}`,
+                `총 가동 시간: ${this.formatDuration(uptimeSeconds)}`,
+                `메모리: RSS ${this.formatMegabytes(memoryUsage.rss)}, heap ${this.formatMegabytes(memoryUsage.heapUsed)} / ${this.formatMegabytes(memoryUsage.heapTotal)}`,
+                `명령어: ${commandCount}개 활성화 됨`,
                 `Node: ${process.version}`,
             ].join("\n"),
             {
@@ -34,26 +33,26 @@ export default class StatusCommand extends BaseCommand{
     }
 
     private formatDuration(totalSeconds: number): string{
-        const days = Math.floor(totalSeconds / 86400);
-        const hours = Math.floor((totalSeconds % 86400) / 3600);
-        const minutes = Math.floor((totalSeconds % 3600) / 60);
-        const seconds = totalSeconds % 60;
         const parts: string[] = [];
-
+        const days = Math.floor(totalSeconds / 86400);
         if(days > 0){
             parts.push(`${days}일`);
         }
 
-        if(hours > 0 || parts.length > 0){
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
+        if(hours > 0){
             parts.push(`${hours}시간`);
         }
 
-        if(minutes > 0 || parts.length > 0){
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        if(minutes > 0){
             parts.push(`${minutes}분`);
         }
 
-        parts.push(`${seconds}초`);
-
+        const seconds = totalSeconds % 60;
+        if(seconds > 0){
+            parts.push(`${seconds}초`);
+        }
         return parts.join(" ");
     }
 
