@@ -5,6 +5,7 @@ import {Context} from "grammy";
 import {BaseCommand} from "../BaseCommand.js";
 import {CommandExecutionRequest, CommandInitContext} from "../types/types.js";
 import {TimerRecord, TimerRepository} from "../../timers/TimerRepository.js";
+import {formatDuration, formatTimestamp} from "../../utils/date.js";
 
 const MAX_TIMER_SECONDS = 24 * 60 * 60;
 const RETRY_DELAY_MS = 60 * 1000;
@@ -54,32 +55,23 @@ export default class TimerCommand extends BaseCommand{
         }
 
         try{
-            const parsedRequest = this.parseRequest(request.rawArgs);
+            const req = this.parseRequest(request.rawArgs);
             const now = Date.now();
             const timer: TimerRecord = {
                 id: randomUUID(),
                 chatId: ctx.chat!.id,
-                message: parsedRequest.message,
-                dueAt: now + parsedRequest.durationSeconds * 1000,
+                message: req.message,
+                dueAt: now + req.durationSeconds * 1000,
                 createdAt: now,
             };
 
             await this.repository.add(timer);
-            this.scheduleTimer(timer.id, parsedRequest.durationSeconds * 1000);
+            this.scheduleTimer(timer.id, req.durationSeconds * 1000);
 
-            await ctx.reply(
-                [
-                    `타이머를 설정했습니다.`,
-                    `남은 시간: ${this.formatDuration(parsedRequest.durationSeconds)}`,
-                    `전송 예정 시각: ${this.formatTimestamp(new Date(timer.dueAt))}`,
-                    `메시지: ${timer.message}`,
-                ].join("\n"),
-                {
-                    reply_parameters: {
-                        message_id: ctx.msg!.message_id,
-                    },
-                },
-            );
+            await ctx.reply([
+                `타이머를 설정했습니다.`,
+                `전송 예정 시각: ${formatTimestamp(new Date(timer.dueAt))}(${formatDuration(req.durationSeconds)} 후)`,
+            ].join("\n"), {reply_parameters: {message_id: ctx.msg!.message_id}});
         }catch(error){
             const message = error instanceof Error ? error.message : "타이머를 설정할 수 없습니다.";
             await ctx.reply(
@@ -122,7 +114,6 @@ export default class TimerCommand extends BaseCommand{
                 if(parsedTokenSeconds === null){
                     break;
                 }
-
                 durationSeconds += parsedTokenSeconds;
                 consumedTokens += 1;
             }
@@ -209,46 +200,13 @@ export default class TimerCommand extends BaseCommand{
         }
 
         try{
-            await this.services.bot.api.sendMessage(timer.chatId, `⏰ ${timer.message}`);
+            await this.services.bot.api.sendMessage(timer.chatId, `${timer.message}`);
             await this.repository.remove(timer.id);
         }catch(error){
             console.error(`Failed to deliver timer ${timer.id}`, error);
-
             if(!this.disposed){
                 this.scheduleTimer(timer.id, RETRY_DELAY_MS);
             }
         }
-    }
-
-    private formatDuration(totalSeconds: number): string{
-        const parts: string[] = [];
-        const hours = Math.floor(totalSeconds / 3600);
-        const minutes = Math.floor((totalSeconds % 3600) / 60);
-        const seconds = totalSeconds % 60;
-
-        if(hours > 0){
-            parts.push(`${hours}시간`);
-        }
-
-        if(minutes > 0){
-            parts.push(`${minutes}분`);
-        }
-
-        if(seconds > 0){
-            parts.push(`${seconds}초`);
-        }
-
-        return parts.join(" ");
-    }
-
-    private formatTimestamp(date: Date): string{
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, "0");
-        const day = String(date.getDate()).padStart(2, "0");
-        const hours = String(date.getHours()).padStart(2, "0");
-        const minutes = String(date.getMinutes()).padStart(2, "0");
-        const seconds = String(date.getSeconds()).padStart(2, "0");
-
-        return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
     }
 }
