@@ -63,7 +63,7 @@ export class BotApplication{
                         .map((command) => `/${command.name}`)
                         .join(", ");
 
-                    console.log(`Telegram bot is running as @${botProfile.username ?? "unknown"}`);
+                    console.log(`Telegram bot is running as @${botProfile.username}`);
                     console.log(`Commands directory: ${this.config.commandsDirectory}`);
                     console.log(`Loaded commands: ${loadedCommandNames || "none"}`);
                 },
