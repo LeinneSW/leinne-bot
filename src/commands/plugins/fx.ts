@@ -20,6 +20,14 @@ interface ApiErrorResponse{
     message?: string;
 }
 
+const CURRENCY_SYMBOL_MAP: Record<string, string> = {
+    "$": "USD",
+    "₩": "KRW",
+    "€": "EUR",
+    "£": "GBP",
+    "¥": "JPY",
+};
+
 //noinspection JSUnusedGlobalSymbols
 export default class FxCommand extends BaseCommand{
     readonly definition = {
@@ -32,7 +40,7 @@ export default class FxCommand extends BaseCommand{
         const chatOptions = {reply_parameters: {message_id: ctx.msg!.message_id}};
 
         try{
-            const conversionRequest = this.parseRequest(request.rawArgs);
+            const conversionRequest = this.parseRequest(request.args);
             const result = await this.convertCurrency(conversionRequest);
 
             await ctx.reply(
@@ -50,15 +58,15 @@ export default class FxCommand extends BaseCommand{
         }
     }
 
-    private parseRequest(rawArgs: string): ParsedConversionRequest{
-        const input = rawArgs.trim();
-
-        if(!input){
+    private parseRequest(tokens: string[]): ParsedConversionRequest{
+        if(tokens.length === 0){
             throw new Error(
                 [
                     "사용법: /fx <금액> <기준통화> <대상통화>",
                     "예시: /fx 100 USD KRW",
                     "예시: /fx USD/KRW 100",
+                    "예시: /fx $100",
+                    "예시: /fx 100 USD -> KRW 기준",
                     "예시: /fx USD KRW",
                 ].join("\n"),
             );
@@ -67,42 +75,49 @@ export default class FxCommand extends BaseCommand{
         let amount: number | null = null;
         const currencies: string[] = [];
 
-        for(const token of input.split(/\s+/)){
-            const normalizedToken = token.trim();
-            const lowerToken = normalizedToken.toLowerCase();
-
-            if(["to", "in", "into", "->"].includes(lowerToken)){
+        for(const token of tokens){
+            if(this.isConnectorToken(token)){
                 continue;
             }
 
-            const pairMatch = normalizedToken.match(/^([a-z]{3})\/([a-z]{3})$/i);
-            if(pairMatch){
-                currencies.push(pairMatch[1].toUpperCase(), pairMatch[2].toUpperCase());
+            const currencyPair = this.parseCurrencyPair(token);
+            if(currencyPair){
+                currencies.push(currencyPair.base, currencyPair.quote);
                 continue;
             }
 
-            const amountWithCurrencyMatch = normalizedToken.match(/^([-+]?(?:\d+(?:,\d{3})*|\d+|\.\d+)(?:\.\d+)?)([a-z]{3})$/i);
-            if(amountWithCurrencyMatch){
-                amount = this.parseAmountToken(amountWithCurrencyMatch[1], amount);
-                currencies.push(amountWithCurrencyMatch[2].toUpperCase());
+            const amountWithCurrency = this.parseAmountWithCurrencyToken(token);
+            if(amountWithCurrency){
+                amount = this.useAmount(amountWithCurrency.amount, amount);
+                currencies.push(amountWithCurrency.currency);
                 continue;
             }
 
-            if(/^[a-z]{3}$/i.test(normalizedToken)){
-                currencies.push(normalizedToken.toUpperCase());
+            const currency = this.parseStandaloneCurrencyToken(token);
+            if(currency){
+                currencies.push(currency);
                 continue;
             }
 
-            if(/^[-+]?(?:\d+(?:,\d{3})*|\d+|\.\d+)(?:\.\d+)?$/.test(normalizedToken)){
-                amount = this.parseAmountToken(normalizedToken, amount);
+            const parsedAmount = this.tryParseAmount(token);
+            if(parsedAmount !== null){
+                amount = this.useAmount(parsedAmount, amount);
                 continue;
             }
 
-            throw new Error(`해석할 수 없는 입력입니다: "${normalizedToken}"\n예시: /fx 100 USD KRW`);
+            throw new Error(`해석할 수 없는 입력입니다: "${token}"\n예시: /fx 100 USD KRW`);
+        }
+
+        if(currencies.length === 1){
+            return {
+                amount: amount ?? 1,
+                base: "KRW",
+                quote: currencies[0],
+            };
         }
 
         if(currencies.length !== 2){
-            throw new Error("통화 코드는 두 개가 필요합니다. 예시: /fx 100 USD KRW");
+            throw new Error("변환하려는 통화 코드가 필요합니다. 예시: /fx 100 USD, /fx 100 USD KRW");
         }
 
         return {
@@ -112,18 +127,143 @@ export default class FxCommand extends BaseCommand{
         };
     }
 
-    private parseAmountToken(token: string, currentAmount: number | null): number{
-        if(currentAmount !== null){
-            throw new Error("금액은 하나만 입력해 주세요. 예시: /fx 100 USD KRW");
+    private isConnectorToken(token: string): boolean{
+        const normalizedToken = token.toLowerCase();
+        return normalizedToken === "to" || normalizedToken === "in" || normalizedToken === "into" || normalizedToken === "->";
+    }
+
+    private parseCurrencyPair(token: string): {base: string; quote: string} | null{
+        const slashIndex = token.indexOf("/");
+        if(slashIndex <= 0 || slashIndex !== token.lastIndexOf("/")){
+            return null;
         }
 
-        const amount = Number(token.replace(/,/g, ""));
+        const base = this.parseStandaloneCurrencyToken(token.slice(0, slashIndex));
+        const quote = this.parseStandaloneCurrencyToken(token.slice(slashIndex + 1));
+        if(!base || !quote){
+            return null;
+        }
+
+        return {base, quote};
+    }
+
+    private parseAmountWithCurrencyToken(token: string): {amount: number; currency: string} | null{
+        if(token.length < 2){
+            return null;
+        }
+
+        const leadingCurrency = this.parseStandaloneCurrencyToken(token[0]);
+        if(leadingCurrency){
+            const amount = this.tryParseAmount(token.slice(1));
+            if(amount !== null){
+                return {amount, currency: leadingCurrency};
+            }
+        }
+
+        const trailingCurrency = this.parseStandaloneCurrencyToken(token[token.length - 1]);
+        if(trailingCurrency){
+            const amount = this.tryParseAmount(token.slice(0, -1));
+            if(amount !== null){
+                return {amount, currency: trailingCurrency};
+            }
+        }
+
+        if(token.length > 3){
+            const leadingCode = this.parseStandaloneCurrencyToken(token.slice(0, 3));
+            if(leadingCode){
+                const amount = this.tryParseAmount(token.slice(3));
+                if(amount !== null){
+                    return {amount, currency: leadingCode};
+                }
+            }
+
+            const trailingCode = this.parseStandaloneCurrencyToken(token.slice(-3));
+            if(trailingCode){
+                const amount = this.tryParseAmount(token.slice(0, -3));
+                if(amount !== null){
+                    return {amount, currency: trailingCode};
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private parseStandaloneCurrencyToken(token: string): string | null{
+        if(token in CURRENCY_SYMBOL_MAP){
+            return CURRENCY_SYMBOL_MAP[token];
+        }
+
+        if(token.length !== 3){
+            return null;
+        }
+
+        for(const char of token){
+            const code = char.charCodeAt(0);
+            const isAsciiLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+            if(!isAsciiLetter){
+                return null;
+            }
+        }
+
+        return token.toUpperCase();
+    }
+
+    private tryParseAmount(token: string): number | null{
+        if(!token){
+            return null;
+        }
+
+        let normalized = "";
+        let hasDigit = false;
+        let hasDecimalPoint = false;
+
+        for(let index = 0; index < token.length; index += 1){
+            const char = token[index];
+
+            if(index === 0 && (char === "+" || char === "-")){
+                normalized += char;
+                continue;
+            }
+
+            if(char >= "0" && char <= "9"){
+                normalized += char;
+                hasDigit = true;
+                continue;
+            }
+
+            if(char === ","){
+                continue;
+            }
+
+            if(char === "." && !hasDecimalPoint){
+                normalized += char;
+                hasDecimalPoint = true;
+                continue;
+            }
+
+            return null;
+        }
+
+        if(!hasDigit || normalized === "+" || normalized === "-" || normalized === "." || normalized === "+." || normalized === "-."){
+            return null;
+        }
+
+        const amount = Number(normalized);
         if(!Number.isFinite(amount)){
-            throw new Error(`금액을 읽을 수 없습니다: "${token}"`);
+            return null;
         }
 
         if(amount < 0){
             throw new Error("금액은 0 이상이어야 합니다.");
+        }
+
+        return amount;
+    }
+
+    private useAmount(amount: number, currentAmount: number | null): number{
+        if(currentAmount !== null){
+            throw new Error("금액은 하나만 입력해 주세요. 예시: /fx 100 USD KRW");
         }
 
         return amount;
