@@ -1,4 +1,6 @@
 import {Bot, Context} from "grammy";
+import type {ChatActivityAnalyzer} from "../../activity/ChatActivityAnalyzer.js";
+import type {ChatActivityRepository} from "../../activity/ChatActivityRepository.js";
 
 export interface CommandDefinition{
     name: string;
@@ -19,6 +21,10 @@ export interface CommandCatalog{
 export interface CommandServices{
     registry: CommandCatalog;
     bot: Bot;
+    activity: {
+        repository: ChatActivityRepository;
+        analyzer: ChatActivityAnalyzer;
+    };
 }
 
 export interface CommandExecutionRequest{

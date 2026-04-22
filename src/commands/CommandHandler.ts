@@ -1,8 +1,9 @@
 import {Bot, Context} from "grammy";
 import {convertHangulToQwerty} from "es-hangul";
 
+import {getLeadingCommandSegment} from "./commandParsing.js";
 import {CommandRegistry} from "./CommandRegistry.js";
-import {CommandExecutionRequest} from "./types/types.js";
+import {CommandExecutionRequest, CommandServices} from "./types/types.js";
 
 interface ParsedCommand{
     token: string;
@@ -13,7 +14,7 @@ interface ParsedCommand{
 export class CommandHandler{
     constructor(
         private readonly registry: CommandRegistry,
-        private readonly bot: Bot,
+        private readonly services: CommandServices,
     ){}
 
     register(bot: Bot, botUsername?: string): void{
@@ -33,10 +34,7 @@ export class CommandHandler{
                 aliasUsed: parsedCommand.token,
                 args: parsedCommand.args,
                 rawArgs: parsedCommand.rawArgs,
-                services: {
-                    registry: this.registry,
-                    bot: this.bot,
-                },
+                services: this.services,
             };
 
             await command.plugin.execute(ctx, request);
@@ -63,8 +61,7 @@ export class CommandHandler{
             return null;
         }
 
-        const entity = message.entities?.find((item) => item.type === "bot_command" && item.offset === 0);
-        const commandSegment = entity ? text.slice(0, entity.length) : this.extractLeadingCommandSegment(text);
+        const commandSegment = getLeadingCommandSegment(text, message.entities);
         if(!commandSegment){
             return null;
         }
@@ -85,16 +82,5 @@ export class CommandHandler{
             rawArgs,
             args: rawArgs ? rawArgs.split(/\s+/) : [],
         };
-    }
-
-    private extractLeadingCommandSegment(text: string): string | null{
-        if(!text.startsWith("/")){
-            return null;
-        }
-        const firstWhitespaceIndex = text.search(/\s/);
-        if(firstWhitespaceIndex === -1){
-            return text;
-        }
-        return text.slice(0, firstWhitespaceIndex);
     }
 }
