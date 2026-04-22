@@ -9,6 +9,11 @@ interface ParsedConversionRequest{
     quote: string;
 }
 
+interface ParsedAmountWithCurrency{
+    amount: number;
+    currency: string;
+}
+
 interface FrankfurterLatestResponse{
     amount: number;
     base: string;
@@ -74,6 +79,7 @@ export default class FxCommand extends BaseCommand{
 
         let amount: number | null = null;
         const currencies: string[] = [];
+        let attachedAmountCurrency: string | null = null;
 
         for(const token of tokens){
             if(this.isConnectorToken(token)){
@@ -90,6 +96,7 @@ export default class FxCommand extends BaseCommand{
             if(amountWithCurrency){
                 amount = this.useAmount(amountWithCurrency.amount, amount);
                 currencies.push(amountWithCurrency.currency);
+                attachedAmountCurrency = amountWithCurrency.currency;
                 continue;
             }
 
@@ -109,6 +116,14 @@ export default class FxCommand extends BaseCommand{
         }
 
         if(currencies.length === 1){
+            if(attachedAmountCurrency && currencies[0] === attachedAmountCurrency){
+                return {
+                    amount: amount ?? 1,
+                    base: currencies[0],
+                    quote: "KRW",
+                };
+            }
+
             return {
                 amount: amount ?? 1,
                 base: "KRW",
@@ -147,7 +162,7 @@ export default class FxCommand extends BaseCommand{
         return {base, quote};
     }
 
-    private parseAmountWithCurrencyToken(token: string): {amount: number; currency: string} | null{
+    private parseAmountWithCurrencyToken(token: string): ParsedAmountWithCurrency | null{
         if(token.length < 2){
             return null;
         }
