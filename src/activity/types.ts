@@ -1,21 +1,15 @@
 export interface ChatActivityRecord{
     chatId: number;
-    messageId: number;
     userId: number;
     username: string | null;
     displayName: string;
     textLength: number;
-    messageType: "text";
-    isCommand: boolean;
-    isBot: boolean;
     createdAt: number;
 }
 
 export interface ChatActivityQuery{
     since?: number;
     until?: number;
-    includeCommands?: boolean;
-    includeBots?: boolean;
 }
 
 export interface UserActivityStats{
@@ -26,9 +20,6 @@ export interface UserActivityStats{
     share: number;
     totalTextLength: number;
     averageTextLength: number;
-    medianTextLength: number;
-    lastMessageAt: number;
-    activeDayCount: number;
 }
 
 export interface ActivityOverview{

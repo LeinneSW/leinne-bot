@@ -29,7 +29,10 @@ export class BotApplication{
     constructor(private readonly config: AppConfig){
         this.bot = new Bot(this.config.botToken);
         this.loader = new CommandLoader(this.config.commandsDirectory);
-        this.activityRepository = new ChatActivityRepository(path.resolve(process.cwd(), "data", "chat-activity.json"));
+        this.activityRepository = new ChatActivityRepository(
+            path.resolve(process.cwd(), "data", "chat-activity.db"),
+            path.resolve(process.cwd(), "data", "chat-activity.json"),
+        );
         this.activityTracker = new ChatActivityTracker(this.activityRepository);
         this.services = {
             registry: this.registry,
@@ -92,11 +95,10 @@ export class BotApplication{
         if(this.isDisposing){
             return;
         }
-
         this.isDisposing = true;
-
         for(const command of [...this.loadedCommands].reverse()){
             await command.dispose?.();
         }
+        this.activityRepository.close();
     }
 }

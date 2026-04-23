@@ -2,7 +2,6 @@ import {Context} from "grammy";
 
 import {BaseCommand} from "../BaseCommand.js";
 import {CommandExecutionRequest} from "../types/types.js";
-import {formatTimestamp} from "../../utils/date.js";
 import {ActivityOverview, ChatActivityQuery, ChatActivityRecord, DailyActivityStats, UserActivityStats} from "../../activity/types.js";
 
 type PeriodPreset = "today" | "7d" | "30d";
@@ -18,7 +17,7 @@ interface PeriodSelection{
 export default class StatsCommand extends BaseCommand{
     readonly definition = {
         name: "stats",
-        description: "/stats [users|me|today|7d|30d|daily|user] => 채팅 통계 조회",
+        description: "/stats [me|today|7d|30d|daily|user] => 채팅 통계 조회",
     };
 
     async execute(ctx: Context, request: CommandExecutionRequest){
@@ -28,10 +27,7 @@ export default class StatsCommand extends BaseCommand{
             return;
         }
 
-        const records = await this.services.activity.repository.getByChat(chat.id, {
-            includeCommands: true,
-            includeBots: true,
-        });
+        const records = await this.services.activity.repository.getByChat(chat.id);
         const args = request.args.map((arg) => arg.toLowerCase());
         const subcommand = args[0] ?? "";
         const chatOptions = {reply_parameters: {message_id: ctx.msg!.message_id}};
@@ -56,20 +52,6 @@ export default class StatsCommand extends BaseCommand{
             return;
         }
 
-        if(subcommand === "user"){
-            const target = request.args[1];
-            if(!target){
-                await ctx.reply("사용법: /stats user @nickname", chatOptions);
-                return;
-            }
-
-            const period = this.resolvePeriod(args[2] ?? "7d");
-            const filteredRecords = this.getFilteredRecords(records, period);
-            const userStats = this.services.activity.analyzer.findUserByName(filteredRecords, target);
-            await ctx.reply(this.renderUserDetail(period, userStats, `${target} 통계`), chatOptions);
-            return;
-        }
-
         if(subcommand === "daily"){
             const period = this.resolvePeriod(args[1] ?? "7d");
             const filteredRecords = this.getFilteredRecords(records, period);
@@ -88,7 +70,7 @@ export default class StatsCommand extends BaseCommand{
                 "/stats 7d",
                 "/stats 30d",
                 "/stats daily",
-                "/stats user @nickname",
+                "/stats user nickname",
             ].join("\n"),
             chatOptions,
         );
@@ -107,8 +89,7 @@ export default class StatsCommand extends BaseCommand{
             since: period.since,
             until: period.until,
         };
-
-        return this.services.activity.analyzer.filter(records, query);
+        return this.services.activity.analyzer.filterByDateRange(records, query);
     }
 
     private renderOverview(period: PeriodSelection, overview: ActivityOverview): string{
@@ -156,14 +137,10 @@ export default class StatsCommand extends BaseCommand{
             return lines.join("\n");
         }
 
-        lines.push(`대상: ${this.formatUserLabel(userStats)}`);
-        lines.push(`채팅 수: ${this.formatCount(userStats.chatCount)}개`);
-        lines.push(`채팅 비율: ${this.formatPercent(userStats.share)}`);
-        lines.push(`총 길이: ${this.formatCount(userStats.totalTextLength)}자`);
-        lines.push(`평균 길이: ${userStats.averageTextLength.toFixed(1)}자`);
-        lines.push(`중앙값 길이: ${userStats.medianTextLength.toFixed(1)}자`);
-        lines.push(`활동 일수: ${this.formatCount(userStats.activeDayCount)}일`);
-        lines.push(`최근 활동: ${formatTimestamp(new Date(userStats.lastMessageAt))}`);
+        lines.push(`총 채팅 수: ${this.formatCount(userStats.chatCount)}개`);
+        lines.push(`총 채팅 길이: ${this.formatCount(userStats.totalTextLength)}자`);
+        lines.push(`평균 채팅 길이: ${userStats.averageTextLength.toFixed(1)}자`);
+        lines.push(`채팅 점유율 (채팅수 / 전체채팅수): ${this.formatPercent(userStats.share)}`);
         return lines.join("\n");
     }
 
@@ -220,7 +197,11 @@ export default class StatsCommand extends BaseCommand{
     }
 
     private formatUserLabel(user: UserActivityStats): string{
-        return user.username ? `@${user.username}` : user.displayName;
+        if(user.username && user.username !== user.displayName){
+            return `${user.displayName} (${user.username})`;
+        }
+
+        return user.displayName;
     }
 
     private formatPercent(value: number): string{

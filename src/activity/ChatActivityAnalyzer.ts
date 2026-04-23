@@ -1,25 +1,10 @@
 import {ActivityOverview, ChatActivityQuery, ChatActivityRecord, DailyActivityStats, UserActivityStats} from "./types.js";
 
 export class ChatActivityAnalyzer{
-    filter(records: ChatActivityRecord[], query: ChatActivityQuery = {}): ChatActivityRecord[]{
+    filterByDateRange(records: ChatActivityRecord[], query: ChatActivityQuery = {}): ChatActivityRecord[]{
         return records.filter((record) => {
-            if(query.since !== undefined && record.createdAt < query.since){
-                return false;
-            }
-
-            if(query.until !== undefined && record.createdAt >= query.until){
-                return false;
-            }
-
-            if(query.includeCommands !== true && record.isCommand){
-                return false;
-            }
-
-            if(query.includeBots !== true && record.isBot){
-                return false;
-            }
-
-            return true;
+            return !((query.since !== undefined && record.createdAt < query.since) || // 시작점보다 이른 채팅은 제외
+                (query.until !== undefined && query.until <= record.createdAt));      // 끝점보다 이후인 채팅은 제외
         });
     }
 
@@ -76,32 +61,6 @@ export class ChatActivityAnalyzer{
         return this.createUserStats(groupedRecords, records.length);
     }
 
-    findUserByName(records: ChatActivityRecord[], name: string): UserActivityStats | null{
-        const normalizedName = name.trim().replace(/^@/, "").toLowerCase();
-        if(!normalizedName){
-            return null;
-        }
-
-        const matchedRecords = records.filter((record) => {
-            if(record.username && record.username.toLowerCase() === normalizedName){
-                return true;
-            }
-
-            return record.displayName.trim().toLowerCase() === normalizedName;
-        });
-
-        if(matchedRecords.length === 0){
-            return null;
-        }
-
-        const bestUserId = this.buildUserStats(matchedRecords)[0]?.userId;
-        if(bestUserId === undefined){
-            return null;
-        }
-
-        return this.findUserById(records, bestUserId);
-    }
-
     buildDailyStats(records: ChatActivityRecord[], dayCount: number, now = new Date()): DailyActivityStats[]{
         const days = Math.max(dayCount, 1);
         const dayMap = new Map<string, DailyActivityStats>();
@@ -139,8 +98,6 @@ export class ChatActivityAnalyzer{
             .map((record) => record.textLength)
             .sort((left, right) => left - right);
         const totalTextLength = sortedLengths.reduce((sum, value) => sum + value, 0);
-        const lastMessageAt = records.reduce((latest, record) => Math.max(latest, record.createdAt), 0);
-        const dayKeys = new Set(records.map((record) => this.toDayKey(new Date(record.createdAt))));
         const latestRecord = records.reduce((latest, record) => {
             if(record.createdAt >= latest.createdAt){
                 return record;
@@ -156,9 +113,6 @@ export class ChatActivityAnalyzer{
             share: totalChatCount === 0 ? 0 : (records.length / totalChatCount) * 100,
             totalTextLength,
             averageTextLength: this.calculateTrimmedMean(sortedLengths),
-            medianTextLength: this.calculateMedian(sortedLengths),
-            lastMessageAt,
-            activeDayCount: dayKeys.size,
         };
     }
 
@@ -172,19 +126,6 @@ export class ChatActivityAnalyzer{
         const values = trimmedValues.length > 0 ? trimmedValues : sortedValues;
         const total = values.reduce((sum, value) => sum + value, 0);
         return total / values.length;
-    }
-
-    private calculateMedian(sortedValues: number[]): number{
-        if(sortedValues.length === 0){
-            return 0;
-        }
-
-        const middleIndex = Math.floor(sortedValues.length / 2);
-        if(sortedValues.length % 2 === 1){
-            return sortedValues[middleIndex];
-        }
-
-        return (sortedValues[middleIndex - 1] + sortedValues[middleIndex]) / 2;
     }
 
     private toDayKey(date: Date): string{

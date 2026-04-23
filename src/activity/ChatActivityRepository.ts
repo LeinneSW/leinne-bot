@@ -1,135 +1,273 @@
 import {promises as fs} from "node:fs";
 import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
 
 import {ChatActivityQuery, ChatActivityRecord} from "./types.js";
 
 export class ChatActivityRepository{
-    private writeQueue = Promise.resolve();
+    private database?: DatabaseSync;
 
     constructor(
-        private readonly filePath: string,
-        private readonly retentionDays = 90,
+        private readonly databasePath: string,
+        private readonly legacyJsonPath?: string,
     ){}
 
     async init(): Promise<void>{
-        await fs.mkdir(path.dirname(this.filePath), {recursive: true});
+        await fs.mkdir(path.dirname(this.databasePath), {recursive: true});
 
-        try{
-            await fs.access(this.filePath);
-        }catch(error){
-            if((error as NodeJS.ErrnoException).code !== "ENOENT"){
-                throw error;
-            }
+        this.database = new DatabaseSync(this.databasePath);
+        this.database.exec(`
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
 
-            await this.writeAllUnsafe([]);
-        }
+            CREATE TABLE IF NOT EXISTS chat_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                display_name TEXT NOT NULL,
+                text_length INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_activity_chat_time
+                ON chat_activity (chat_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_chat_activity_chat_user_time
+                ON chat_activity (chat_id, user_id, created_at);
+        `);
+
+        await this.importLegacyJsonIfNeeded();
+    }
+
+    close(): void{
+        this.database?.close();
+        this.database = undefined;
     }
 
     async getAll(): Promise<ChatActivityRecord[]>{
-        await this.writeQueue;
-        return this.readAllUnsafe();
+        const rows = this.getDatabase()
+            .prepare(`
+                SELECT
+                    chat_id,
+                    user_id,
+                    username,
+                    display_name,
+                    text_length,
+                    created_at
+                FROM chat_activity
+                ORDER BY created_at ASC
+            `)
+            .all() as unknown as ChatActivityRow[];
+
+        return rows.map((row) => this.mapRow(row));
     }
 
     async getByChat(chatId: number, query: ChatActivityQuery = {}): Promise<ChatActivityRecord[]>{
-        const records = await this.getAll();
-        return records.filter((record) => this.matchesQuery(record, chatId, query));
+        const conditions = ["chat_id = ?"];
+        const parameters: Array<number | string | null> = [chatId];
+
+        if(query.since !== undefined){
+            conditions.push("created_at >= ?");
+            parameters.push(query.since);
+        }
+
+        if(query.until !== undefined){
+            conditions.push("created_at < ?");
+            parameters.push(query.until);
+        }
+
+        const rows = this.getDatabase()
+            .prepare(`
+                SELECT
+                    chat_id,
+                    user_id,
+                    username,
+                    display_name,
+                    text_length,
+                    created_at
+                FROM chat_activity
+                WHERE ${conditions.join(" AND ")}
+                ORDER BY created_at ASC
+            `)
+            .all(...parameters) as unknown as ChatActivityRow[];
+
+        return rows.map((row) => this.mapRow(row));
     }
 
     async append(record: ChatActivityRecord): Promise<void>{
-        await this.enqueue(async() => {
-            const records = await this.readAllUnsafe();
-            records.push(record);
-            const retentionStart = Date.now() - this.retentionDays * 24 * 60 * 60 * 1000;
-            const retainedRecords = records.filter((item) => item.createdAt >= retentionStart);
-            await this.writeAllUnsafe(retainedRecords);
-        });
+        this.getDatabase()
+            .prepare(`
+                INSERT INTO chat_activity (
+                    chat_id,
+                    user_id,
+                    username,
+                    display_name,
+                    text_length,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            `)
+            .run(
+                record.chatId,
+                record.userId,
+                record.username,
+                record.displayName,
+                record.textLength,
+                record.createdAt,
+            );
     }
 
-    private matchesQuery(record: ChatActivityRecord, chatId: number, query: ChatActivityQuery): boolean{
-        if(record.chatId !== chatId){
-            return false;
+    private async importLegacyJsonIfNeeded(): Promise<void>{
+        if(!this.legacyJsonPath){
+            return;
         }
 
-        if(query.since !== undefined && record.createdAt < query.since){
-            return false;
+        const database = this.getDatabase();
+        const existingCount = database.prepare("SELECT COUNT(*) AS count FROM chat_activity").get() as {count: number};
+        if(existingCount.count > 0){
+            return;
         }
 
-        if(query.until !== undefined && record.createdAt >= query.until){
-            return false;
+        try{
+            await fs.access(this.legacyJsonPath);
+        }catch(error){
+            if((error as NodeJS.ErrnoException).code === "ENOENT"){
+                return;
+            }
+
+            throw error;
         }
 
-        if(query.includeCommands !== true && record.isCommand){
-            return false;
-        }
-
-        if(query.includeBots !== true && record.isBot){
-            return false;
-        }
-
-        return true;
-    }
-
-    private enqueue<T>(operation: () => Promise<T>): Promise<T>{
-        const result = this.writeQueue.then(operation, operation);
-        this.writeQueue = result.then(() => undefined, () => undefined);
-        return result;
-    }
-
-    private async readAllUnsafe(): Promise<ChatActivityRecord[]>{
-        const content = await fs.readFile(this.filePath, "utf8");
+        const content = await fs.readFile(this.legacyJsonPath, "utf8");
         const parsed = JSON.parse(content) as unknown;
-
         if(!Array.isArray(parsed)){
-            throw new Error(`Invalid chat activity storage format: ${this.filePath}`);
+            throw new Error(`Invalid legacy chat activity storage format: ${this.legacyJsonPath}`);
         }
 
-        return parsed.map((item) => this.normalizeRecord(item));
+        const records = parsed
+            .map((item) => this.normalizeLegacyRecord(item))
+            .filter((item): item is ChatActivityRecord => item !== null);
+
+        if(records.length === 0){
+            return;
+        }
+
+        const insert = database.prepare(`
+            INSERT INTO chat_activity (
+                chat_id,
+                user_id,
+                username,
+                display_name,
+                text_length,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        `);
+
+        database.exec("BEGIN");
+
+        try{
+            for(const record of records){
+                insert.run(
+                    record.chatId,
+                    record.userId,
+                    record.username,
+                    record.displayName,
+                    record.textLength,
+                    record.createdAt,
+                );
+            }
+            database.exec("COMMIT");
+        }catch(error){
+            database.exec("ROLLBACK");
+            throw error;
+        }
+
+        await this.renameLegacyJsonToBackup();
     }
 
-    private normalizeRecord(value: unknown): ChatActivityRecord{
+    private normalizeLegacyRecord(value: unknown): ChatActivityRecord | null{
         if(typeof value !== "object" || value === null){
-            throw new Error(`Invalid chat activity record in ${this.filePath}`);
+            console.error(`Invalid legacy chat activity record in ${this.legacyJsonPath}`, value);
+            return null;
         }
 
-        const candidate = value as Partial<ChatActivityRecord>;
+        const candidate = value as Partial<ChatActivityRecord> & {
+            isCommand?: unknown;
+            isBot?: unknown;
+        };
+
+        if(candidate.isCommand === true || candidate.isBot === true){
+            return null;
+        }
 
         if(
             typeof candidate.chatId !== "number"
             || !Number.isFinite(candidate.chatId)
-            || typeof candidate.messageId !== "number"
-            || !Number.isFinite(candidate.messageId)
             || typeof candidate.userId !== "number"
             || !Number.isFinite(candidate.userId)
             || (typeof candidate.username !== "string" && candidate.username !== null)
             || typeof candidate.displayName !== "string"
             || typeof candidate.textLength !== "number"
             || !Number.isFinite(candidate.textLength)
-            || candidate.messageType !== "text"
-            || typeof candidate.isCommand !== "boolean"
-            || typeof candidate.isBot !== "boolean"
             || typeof candidate.createdAt !== "number"
             || !Number.isFinite(candidate.createdAt)
         ){
-            throw new Error(`Invalid chat activity record in ${this.filePath}`);
+            console.error(`Invalid legacy chat activity record in ${this.legacyJsonPath}`, value);
+            return null;
         }
 
         return {
             chatId: candidate.chatId,
-            messageId: candidate.messageId,
             userId: candidate.userId,
             username: candidate.username,
             displayName: candidate.displayName,
             textLength: candidate.textLength,
-            messageType: "text",
-            isCommand: candidate.isCommand,
-            isBot: candidate.isBot,
             createdAt: candidate.createdAt,
         };
     }
 
-    private async writeAllUnsafe(records: ChatActivityRecord[]): Promise<void>{
-        const tempPath = `${this.filePath}.tmp`;
-        await fs.writeFile(tempPath, JSON.stringify(records, null, 2), "utf8");
-        await fs.rename(tempPath, this.filePath);
+    private mapRow(row: ChatActivityRow): ChatActivityRecord{
+        return {
+            chatId: row.chat_id,
+            userId: row.user_id,
+            username: row.username,
+            displayName: row.display_name,
+            textLength: row.text_length,
+            createdAt: row.created_at,
+        };
     }
+
+    private getDatabase(): DatabaseSync{
+        if(!this.database){
+            throw new Error("Chat activity database is not initialized.");
+        }
+
+        return this.database;
+    }
+
+    private async renameLegacyJsonToBackup(): Promise<void>{
+        if(!this.legacyJsonPath){
+            return;
+        }
+
+        const backupPath = `${this.legacyJsonPath}.bak`;
+        try{
+            await fs.rm(backupPath, {force: true});
+        }catch(error){
+            if((error as NodeJS.ErrnoException).code !== "ENOENT"){
+                throw error;
+            }
+        }
+
+        await fs.rename(this.legacyJsonPath, backupPath);
+    }
+}
+
+interface ChatActivityRow{
+    chat_id: number;
+    user_id: number;
+    username: string | null;
+    display_name: string;
+    text_length: number;
+    created_at: number;
 }

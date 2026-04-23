@@ -1,6 +1,5 @@
 import {Bot, Context} from "grammy";
 
-import {getLeadingCommandSegment} from "../commands/commandParsing.js";
 import {ChatActivityRepository} from "./ChatActivityRepository.js";
 import {ChatActivityRecord} from "./types.js";
 
@@ -28,16 +27,17 @@ export class ChatActivityTracker{
             return;
         }
 
+        // 봇의 채팅의 경우에만 무시, 커맨드/메시지 모두 대화로 판단
+        if(from.is_bot){
+            return;
+        }
+
         const record: ChatActivityRecord = {
             chatId: chat.id,
-            messageId: message.message_id,
             userId: from.id,
             username: from.username ?? null,
             displayName: this.getDisplayName(from),
             textLength: this.measureTextLength(text),
-            messageType: "text",
-            isCommand: getLeadingCommandSegment(text, message.entities) !== null,
-            isBot: from.is_bot,
             createdAt: message.date * 1000,
         };
 
